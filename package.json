@@ -1,0 +1,13 @@
+{
+  "name": "linkwala-api",
+  "version": "1.0.0",
+  "description": "Serverless API & Telegram automation for LinkWala",
+  "main": "videos.js",
+  "type": "module",
+  "scripts": {
+    "start": "node videos.js"
+  },
+  "dependencies": {
+    "mongoose": "^8.0.0"
+  }
+}
