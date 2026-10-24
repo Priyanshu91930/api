@@ -1,6 +1,5 @@
 import { connectDB } from './config/db.js';
 import Video from './models/Video.js';
-import { uploadImageToDrive } from './config/gdrive.js';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CLOUDFLARE_STREAM_URL = process.env.CLOUDFLARE_STREAM_URL || 'https://linkwala.priyanshusolanki62.workers.dev';
@@ -40,22 +39,14 @@ async function getTelegramFilePath(fileId) {
 }
 
 /**
- * Download Telegram photo buffer and upload to Google Drive automatically
+ * Convert photo file_id directly to Cloudflare Image CDN link
  */
-async function autoUploadPhotoToDrive(photoFileId) {
+async function getPhotoCdnUrl(photoFileId) {
   try {
     const filePath = await getTelegramFilePath(photoFileId);
-    const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
-    const res = await fetch(downloadUrl);
-    if (!res.ok) throw new Error('Failed to download photo from Telegram');
-
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    const uploadRes = await uploadImageToDrive(buffer, `photo_${Date.now()}.jpg`, 'image/jpeg');
-    return uploadRes.directCdnUrl;
+    return `${CLOUDFLARE_STREAM_URL}/image?path=${encodeURIComponent(filePath)}`;
   } catch (err) {
-    console.error('❌ Auto-upload photo to Google Drive failed:', err.message);
+    console.error('Failed to get photo CDN URL:', err.message);
     return '';
   }
 }
@@ -71,20 +62,10 @@ function parseCaption(caption = '') {
     tags.push(match[1].toLowerCase());
   }
 
-  let thumbnailUrl = '';
-  const gdriveMatch = caption.match(/\[(?:thumb|gdrive):([^\]]+)\]/i);
-  if (gdriveMatch) {
-    let driveVal = gdriveMatch[1].trim();
-    if (!driveVal.startsWith('http')) {
-      thumbnailUrl = `https://lh3.googleusercontent.com/d/${driveVal}`;
-    } else {
-      thumbnailUrl = driveVal;
-    }
-  }
-
+  // Clean title by removing hashtags and telegram links
   let cleanTitle = caption
     .replace(/#\w+/g, '')
-    .replace(/\[(?:thumb|gdrive):[^\]]+\]/gi, '')
+    .replace(/https?:\/\/t\.me\/[^\s]+/gi, '')
     .trim();
 
   if (!cleanTitle) {
@@ -94,7 +75,6 @@ function parseCaption(caption = '') {
   return {
     title: cleanTitle,
     tags: tags.length > 0 ? tags : ['viral'],
-    thumbnailUrl,
     isPremium: tags.includes('premium'),
   };
 }
@@ -120,11 +100,11 @@ export default async function handler(req, res) {
       await sendTelegramMessage(
         chatId,
         `👋 <b>Welcome to LinkWala Bot!</b>\n\n` +
-          `Main aapki videos aur photos ko Google Drive aur Cloudflare me auto-stream karta hoon!\n\n` +
+          `Main aapki videos aur photos ko Cloudflare Edge CDN se stream aur auto-index karta hoon!\n\n` +
           `<b>Kaise use karein:</b>\n` +
-          `• Koi bhi video post/forward karein (with photo/thumbnail)\n` +
-          `• Image automatically Google Drive me upload hogi\n` +
-          `• Video ka Cloudflare Stream Link instant banega\n\n` +
+          `• Dump Channel me photo + caption me telegram video link post karein\n` +
+          `• Photo Cloudflare Edge CDN par instant live ho jayegi\n` +
+          `• Post seedha LinkWala App me render hone lagega!\n\n` +
           `🌐 <b>Official Website:</b> <a href="https://www.tg.linkwala.com">www.tg.linkwala.com</a>`,
         {
           reply_markup: {
@@ -144,27 +124,25 @@ export default async function handler(req, res) {
       await sendTelegramMessage(
         chatId,
         `📊 <b>LinkWala Database Stats:</b>\n\n` +
-          `• Total Indexed Videos: <b>${count}</b>\n` +
-          `• Google Drive Auto-Sync: <b>Connected</b>\n` +
-          `• Cloudflare Edge Cache: <b>Active</b>\n` +
+          `• Total Indexed Posts: <b>${count}</b>\n` +
+          `• Cloudflare Edge CDN: <b>Active (Videos + Images)</b>\n` +
           `• Serverless Status: <b>Online</b>`
       );
       return res.status(200).json({ status: 'Handled /stats' });
     }
 
-    // Video / Document / Photo processing
     const videoObj = message.video || message.document;
-    const photoArr = message.photo; // Array of PhotoSizes
+    const photoArr = message.photo;
 
-    // Dump Channel Handler: Photo posted with video link in caption
+    // 1. DUMP CHANNEL POST HANDLER: Photo posted with Telegram link in caption
     if (photoArr && photoArr.length > 0) {
       const bestPhoto = photoArr[photoArr.length - 1];
       const caption = message.caption || '';
-      
-      // Auto-upload photo to Google Drive
-      const gdriveCdn = await autoUploadPhotoToDrive(bestPhoto.file_id);
 
-      // Check if caption contains a Telegram video/bot link
+      // Instant Cloudflare CDN Image URL
+      const imageCdnUrl = await getPhotoCdnUrl(bestPhoto.file_id);
+
+      // Check if caption contains a Telegram video or bot link
       const tgLinkMatch = caption.match(/(https?:\/\/t\.me\/[^\s]+)/i);
 
       if (tgLinkMatch) {
@@ -172,7 +150,7 @@ export default async function handler(req, res) {
         const { title, tags, isPremium } = parseCaption(caption);
         const targetLink = tgLinkMatch[1];
 
-        // Save post into MongoDB Atlas
+        // Save into MongoDB Atlas
         const video = await Video.findOneAndUpdate(
           { caption: targetLink },
           {
@@ -180,7 +158,7 @@ export default async function handler(req, res) {
             caption,
             telegramFileId: bestPhoto.file_id,
             telegramFilePath: targetLink,
-            thumbnailUrl: gdriveCdn,
+            thumbnailUrl: imageCdnUrl,
             tags,
             isPremium,
           },
@@ -189,101 +167,85 @@ export default async function handler(req, res) {
 
         await sendTelegramMessage(
           chatId,
-          `✅ <b>Dump Post Synced to LinkWala App!</b> 🎉\n\n` +
+          `✅ <b>Post Synced to LinkWala App!</b> 🎉\n\n` +
             `🎬 <b>Title:</b> ${video.title}\n` +
             `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
-            `🖼️ <b>Google Drive Thumbnail:</b>\n<code>${gdriveCdn}</code>\n\n` +
-            `🔗 <b>Target Link:</b>\n<code>${targetLink}</code>`,
+            `🖼️ <b>Cloudflare Image CDN:</b>\n<code>${imageCdnUrl}</code>\n\n` +
+            `🔗 <b>Video Link:</b>\n<code>${targetLink}</code>`,
           { reply_to_message_id: message.message_id }
         );
-        return res.status(200).json({ status: 'Dump post synced to MongoDB & GDrive', id: video._id });
+        return res.status(200).json({ success: true, message: 'Dump post indexed', id: video._id });
       }
 
-      // If only photo without link
+      // If only photo sent without caption link
       await sendTelegramMessage(
         chatId,
-        `🖼️ <b>Photo Auto-Uploaded to Google Drive!</b>\n\n` +
-          `⚡ <b>High-Speed CDN Link:</b>\n<code>${gdriveCdn}</code>`,
+        `🖼️ <b>Cloudflare Image CDN Link:</b>\n\n<code>${imageCdnUrl}</code>`,
         { reply_to_message_id: message.message_id }
       );
-      return res.status(200).json({ status: 'Photo uploaded to GDrive' });
+      return res.status(200).json({ status: 'Photo CDN generated', url: imageCdnUrl });
     }
 
-    if (!videoObj) {
-      if (text) {
-        await sendTelegramMessage(
-          chatId,
-          `📹 Mujhe video (with optional photo/thumbnail) forward karein taaki wo Google Drive + Cloudflare par auto-stream ho sake!`
-        );
+    // 2. DIRECT VIDEO FORWARD / UPLOAD HANDLER
+    if (videoObj) {
+      await connectDB();
+
+      const fileId = videoObj.file_id;
+      const fileSize = videoObj.file_size || 0;
+      const duration = videoObj.duration || 0;
+      const caption = message.caption || '';
+
+      const { title, tags, isPremium } = parseCaption(caption);
+      const filePath = await getTelegramFilePath(fileId);
+
+      // Instant Cloudflare Video Streaming Link
+      const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
+
+      // Thumbnail from video if available
+      let thumbCdn = '';
+      if (videoObj.thumbnail?.file_id) {
+        thumbCdn = await getPhotoCdnUrl(videoObj.thumbnail.file_id);
       }
+
+      const video = await Video.findOneAndUpdate(
+        { telegramFileId: fileId },
+        {
+          title,
+          caption,
+          telegramFileId: fileId,
+          telegramFilePath: filePath,
+          fileSize,
+          duration,
+          thumbnailUrl: thumbCdn,
+          tags,
+          isPremium,
+        },
+        { upsert: true, new: true }
+      );
+
+      await sendTelegramMessage(
+        chatId,
+        `✅ <b>Video Saved Successfully!</b> 🎉\n\n` +
+          `🎬 <b>Title:</b> ${video.title}\n` +
+          `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
+          `📦 <b>Size:</b> ${(fileSize / (1024 * 1024)).toFixed(1)} MB\n` +
+          (thumbCdn ? `🖼️ <b>Thumbnail:</b>\n<code>${thumbCdn}</code>\n\n` : '\n') +
+          `⚡ <b>Cloudflare Stream Link:</b>\n<code>${streamUrl}</code>`,
+        { reply_to_message_id: message.message_id }
+      );
+
+      return res.status(200).json({ success: true, id: video._id });
+    }
+
+    if (text) {
+      await sendTelegramMessage(
+        chatId,
+        `📹 Mujhe photo + video link caption me bhejein ya direct video forward karein!\n\nHelp ke liye <code>/help</code> bhejein.`
+      );
       return res.status(200).json({ status: 'Handled text' });
     }
 
-    await connectDB();
-
-    const fileId = videoObj.file_id;
-    const fileSize = videoObj.file_size || 0;
-    const duration = videoObj.duration || 0;
-    const caption = message.caption || '';
-
-    let { title, tags, thumbnailUrl, isPremium } = parseCaption(caption);
-
-    // 1. Auto-upload thumbnail if video has an embedded thumbnail or message has photo
-    if (!thumbnailUrl) {
-      const thumbFileId = videoObj.thumbnail?.file_id || (photoArr && photoArr[photoArr.length - 1]?.file_id);
-      if (thumbFileId) {
-        console.log('🔄 Auto-uploading thumbnail to Google Drive...');
-        thumbnailUrl = await autoUploadPhotoToDrive(thumbFileId);
-      }
-    }
-
-    // 2. Fetch official file_path from Telegram Bot API
-    const filePath = await getTelegramFilePath(fileId);
-
-    // 3. Instant Cloudflare Stream URL
-    const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
-
-    // 4. Save directly into MongoDB Atlas
-    const video = await Video.findOneAndUpdate(
-      { telegramFileId: fileId },
-      {
-        title,
-        caption,
-        telegramFileId: fileId,
-        telegramFilePath: filePath,
-        fileSize,
-        duration,
-        thumbnailUrl: thumbnailUrl || '',
-        tags,
-        isPremium,
-      },
-      { upsert: true, new: true }
-    );
-
-    // 5. Send confirmation reply
-    await sendTelegramMessage(
-      chatId,
-      `✅ <b>Video & Thumbnail Auto-Processed!</b> 🎉\n\n` +
-        `🎬 <b>Title:</b> ${video.title}\n` +
-        `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
-        `📦 <b>Size:</b> ${(fileSize / (1024 * 1024)).toFixed(1)} MB\n` +
-        (thumbnailUrl ? `🖼️ <b>GDrive Thumbnail:</b>\n<code>${thumbnailUrl}</code>\n\n` : '\n') +
-        `⚡ <b>Cloudflare Stream Link:</b>\n<code>${streamUrl}</code>`,
-      {
-        reply_to_message_id: message.message_id,
-      }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: 'Video and thumbnail processed successfully',
-      video: {
-        id: video._id,
-        title: video.title,
-        thumbnailUrl,
-        streamUrl,
-      },
-    });
+    return res.status(200).json({ status: 'No action' });
   } catch (error) {
     console.error('❌ Error handling telegram webhook:', error);
     return res.status(500).json({ success: false, error: error.message });
