@@ -14,7 +14,7 @@ const VideoSchema = new mongoose.Schema(
     telegramFileId: {
       type: String,
       required: true,
-      unique: true,
+      index: true,
     },
     telegramFilePath: {
       type: String,

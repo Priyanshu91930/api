@@ -271,9 +271,9 @@ export default async function handler(req, res) {
           ? `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(videoFilePath)}`
           : targetLink;
 
-        // Save into MongoDB Atlas
+        // Save into MongoDB Atlas (Match either by videoFileId or targetLink to prevent duplicates)
         const video = await Video.findOneAndUpdate(
-          { caption: targetLink },
+          { $or: [{ telegramFileId: videoFileId }, { caption: targetLink }] },
           {
             title: title || `Video_${Date.now()}`,
             caption,
