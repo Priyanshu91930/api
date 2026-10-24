@@ -1,19 +1,16 @@
 /**
  * Smart Universal Redirect Handler
- * Opens LinkWala app directly with code, or redirects to Google Play Store!
- * 
- * Usage URL:
- * https://api-brainaxe.vercel.app/join?code=VIRAL
+ * Opens LinkWala app directly with code!
  */
 export default function handler(req, res) {
   const { code = 'VIRAL' } = req.query;
   const normalizedCode = encodeURIComponent(code.trim().toUpperCase());
 
+  // Direct Scheme URL
   const appSchemeUrl = `linkwala://join?code=${normalizedCode}`;
-  const playStoreUrl = `https://play.google.com/store/apps/details?id=com.linkwala.official&referrer=code%3D${normalizedCode}`;
   
-  // Chrome Android Intent format: Launches app immediately if installed
-  const intentUrl = `intent://join?code=${normalizedCode}#Intent;scheme=linkwala;package=com.linkwala.official;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+  // Standard Android Chrome Intent format
+  const intentUrl = `intent://join?code=${normalizedCode}#Intent;scheme=linkwala;package=com.linkwala.official;end`;
 
   const html = `<!DOCTYPE html>
 <html>
@@ -51,12 +48,13 @@ export default function handler(req, res) {
       background: #e60023;
       color: white;
       text-decoration: none;
-      padding: 14px 0;
-      border-radius: 12px;
-      font-weight: 700;
-      font-size: 16px;
-      margin-top: 20px;
+      padding: 16px 0;
+      border-radius: 14px;
+      font-weight: 800;
+      font-size: 17px;
+      margin-top: 24px;
       box-sizing: border-box;
+      box-shadow: 0 4px 14px rgba(230, 0, 35, 0.4);
     }
     .code-badge {
       background: #334155;
@@ -71,17 +69,25 @@ export default function handler(req, res) {
     }
   </style>
   <script>
-    // Automatically launch Android App immediately
-    window.location.replace("${intentUrl}");
+    function triggerApp() {
+      // Try Intent first (Chrome on Android)
+      window.location.href = "${intentUrl}";
+      
+      // Fallback to direct scheme
+      setTimeout(function() {
+        window.location.href = "${appSchemeUrl}";
+      }, 500);
+    }
+    window.onload = triggerApp;
   </script>
 </head>
 <body>
   <div class="card">
-    <h2>🚀 Opening LinkWala...</h2>
+    <h2>🚀 Launching LinkWala...</h2>
     <p>Unlocking channel with code:</p>
     <div class="code-badge">${code.toUpperCase()}</div>
     <br/>
-    <a href="${intentUrl}" class="btn">Open App</a>
+    <a href="${intentUrl}" class="btn" onclick="triggerApp()">Tap to Open LinkWala</a>
   </div>
 </body>
 </html>`;
