@@ -3,17 +3,19 @@
  * Opens LinkWala app directly with code, or redirects to Google Play Store!
  * 
  * Usage URL:
- * https://api-brainaxe.vercel.app/join?code=LINKWALA
+ * https://api-brainaxe.vercel.app/join?code=VIRAL
  */
 export default function handler(req, res) {
-  const { code = 'LINKWALA' } = req.query;
+  const { code = 'VIRAL' } = req.query;
   const normalizedCode = encodeURIComponent(code.trim().toUpperCase());
 
   const appSchemeUrl = `linkwala://join?code=${normalizedCode}`;
   const playStoreUrl = `https://play.google.com/store/apps/details?id=com.linkwala.official&referrer=code%3D${normalizedCode}`;
+  
+  // Chrome Android Intent format: Launches app immediately if installed
+  const intentUrl = `intent://join?code=${normalizedCode}#Intent;scheme=linkwala;package=com.linkwala.official;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
 
-  const html = `
-<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -56,10 +58,6 @@ export default function handler(req, res) {
       margin-top: 20px;
       box-sizing: border-box;
     }
-    .secondary-btn {
-      background: #3b82f6;
-      margin-top: 10px;
-    }
     .code-badge {
       background: #334155;
       padding: 6px 14px;
@@ -73,15 +71,8 @@ export default function handler(req, res) {
     }
   </style>
   <script>
-    window.onload = function() {
-      // 1. Try to open the app directly
-      window.location.href = "${appSchemeUrl}";
-
-      // 2. Fallback to Play Store after 1.8 seconds if app is not installed
-      setTimeout(function() {
-        window.location.href = "${playStoreUrl}";
-      }, 1800);
-    };
+    // Automatically launch Android App immediately
+    window.location.replace("${intentUrl}");
   </script>
 </head>
 <body>
@@ -90,12 +81,10 @@ export default function handler(req, res) {
     <p>Unlocking channel with code:</p>
     <div class="code-badge">${code.toUpperCase()}</div>
     <br/>
-    <a href="${appSchemeUrl}" class="btn">Open App Directly</a>
-    <a href="${playStoreUrl}" class="btn secondary-btn">Install from Play Store</a>
+    <a href="${intentUrl}" class="btn">Open App</a>
   </div>
 </body>
-</html>
-  `;
+</html>`;
 
   res.setHeader('Content-Type', 'text/html');
   return res.status(200).send(html);
