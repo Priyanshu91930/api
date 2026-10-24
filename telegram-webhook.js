@@ -2,6 +2,28 @@ import { connectDB } from './config/db.js';
 import Video from './models/Video.js';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CLOUDFLARE_STREAM_URL = process.env.CLOUDFLARE_STREAM_URL || 'https://linkwala.priyanshusolanki62.workers.dev';
+
+/**
+ * Send interactive message to Telegram chat
+ */
+async function sendTelegramMessage(chatId, text, extra = {}) {
+  try {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        ...extra,
+      }),
+    });
+  } catch (err) {
+    console.error('Failed to send telegram message:', err);
+  }
+}
 
 /**
  * Helper to fetch file_path from Telegram Bot API using file_id
@@ -18,8 +40,6 @@ async function getTelegramFilePath(fileId) {
 
 /**
  * Helper to parse tags and title from message caption
- * Example caption:
- * "My Super Viral Video #viral #premium [gdrive:https://lh3.googleusercontent.com/d/xyz]"
  */
 function parseCaption(caption = '') {
   const hashtagRegex = /#(\w+)/g;
@@ -29,7 +49,6 @@ function parseCaption(caption = '') {
     tags.push(match[1].toLowerCase());
   }
 
-  // Check Google Drive thumbnail tag e.g. [thumb:https://...] or [gdrive:id]
   let thumbnailUrl = '';
   const gdriveMatch = caption.match(/\[(?:thumb|gdrive):([^\]]+)\]/i);
   if (gdriveMatch) {
@@ -41,7 +60,6 @@ function parseCaption(caption = '') {
     }
   }
 
-  // Clean title by removing hashtags and thumbnail tags
   let cleanTitle = caption
     .replace(/#\w+/g, '')
     .replace(/\[(?:thumb|gdrive):[^\]]+\]/gi, '')
@@ -66,16 +84,74 @@ export default async function handler(req, res) {
 
   try {
     const update = req.body;
-
-    // We accept videos forwarded to the bot or sent in private channel
     const message = update?.message || update?.channel_post;
+
     if (!message) {
       return res.status(200).json({ status: 'Ignored: No message payload' });
     }
 
+    const chatId = message.chat.id;
+    const text = message.text?.trim() || '';
+
+    // Handle Bot Commands (/start, /help, /stats)
+    if (text.startsWith('/start')) {
+      await sendTelegramMessage(
+        chatId,
+        `👋 <b>Welcome to LinkWala Bot!</b>\n\n` +
+          `Main aapki videos ko app me high-speed stream aur auto-index karta hoon.\n\n` +
+          `<b>Commands:</b>\n` +
+          `• Send/Forward any Video or File\n` +
+          `• <code>/stats</code> - Check total database videos\n` +
+          `• <code>/help</code> - How to use\n\n` +
+          `🌐 <b>Official Website:</b> <a href="https://www.tg.linkwala.com">www.tg.linkwala.com</a>`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📢 Join Official Channel', url: 'https://t.me/+PuWfxzC2QEVkNzA1' }],
+              [{ text: '🌐 Creator Website', url: 'https://www.tg.linkwala.com' }],
+            ],
+          },
+        }
+      );
+      return res.status(200).json({ status: 'Handled /start' });
+    }
+
+    if (text.startsWith('/help')) {
+      await sendTelegramMessage(
+        chatId,
+        `ℹ️ <b>How to Index Videos in LinkWala App:</b>\n\n` +
+          `1. Mujhe ya aapke connected channel me koi bhi <b>Video</b> send/forward karein.\n` +
+          `2. Caption me Title aur Tags likhein:\n` +
+          `   <i>My Viral Video #viral #premium [gdrive:YOUR_IMAGE_ID]</i>\n` +
+          `3. Video turant MongoDB me index ho jayegi aur app me live ho jayegi!`
+      );
+      return res.status(200).json({ status: 'Handled /help' });
+    }
+
+    if (text.startsWith('/stats')) {
+      await connectDB();
+      const count = await Video.countDocuments();
+      await sendTelegramMessage(
+        chatId,
+        `📊 <b>LinkWala Database Stats:</b>\n\n` +
+          `• Total Indexed Videos: <b>${count}</b>\n` +
+          `• Cloudflare Edge Cache: <b>Active</b>\n` +
+          `• Serverless Status: <b>Online</b>`
+      );
+      return res.status(200).json({ status: 'Handled /stats' });
+    }
+
+    // Video / Document processing
     const videoObj = message.video || message.document;
     if (!videoObj) {
-      return res.status(200).json({ status: 'Ignored: No video or document found' });
+      // Normal text received but not a command
+      if (text) {
+        await sendTelegramMessage(
+          chatId,
+          `📹 Mujhe video forward karein ya send karein taaki wo LinkWala app me automatically add ho sake!\n\nHelp ke liye <code>/help</code> bhejein.`
+        );
+      }
+      return res.status(200).json({ status: 'Handled text' });
     }
 
     await connectDB();
@@ -85,7 +161,6 @@ export default async function handler(req, res) {
     const duration = videoObj.duration || 0;
     const caption = message.caption || '';
 
-    // Parse caption for title, hashtags (#viral, #premium), and GDrive thumbnail
     const { title, tags, thumbnailUrl, isPremium } = parseCaption(caption);
 
     // Fetch official file_path from Telegram Bot API
@@ -108,16 +183,29 @@ export default async function handler(req, res) {
       { upsert: true, new: true }
     );
 
-    console.log(`✅ Saved Video to MongoDB: ${video.title} (Tags: ${tags.join(', ')})`);
+    // Stream URL via Cloudflare Worker
+    const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
+
+    // Send instant confirmation reply to Telegram
+    await sendTelegramMessage(
+      chatId,
+      `✅ <b>Video Saved Successfully to LinkWala!</b> 🎉\n\n` +
+        `🎬 <b>Title:</b> ${video.title}\n` +
+        `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
+        `💎 <b>Type:</b> ${isPremium ? 'Premium (Locked)' : 'Public'}\n` +
+        `📦 <b>Size:</b> ${(fileSize / (1024 * 1024)).toFixed(1)} MB\n\n` +
+        `⚡ <b>Cloudflare Stream Link:</b>\n<code>${streamUrl}</code>`,
+      {
+        reply_to_message_id: message.message_id,
+      }
+    );
 
     return res.status(200).json({
       success: true,
-      message: 'Video indexed successfully',
+      message: 'Video indexed and replied successfully',
       video: {
         id: video._id,
         title: video.title,
-        tags: video.tags,
-        isPremium: video.isPremium,
       },
     });
   } catch (error) {
