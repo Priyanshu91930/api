@@ -156,10 +156,50 @@ export default async function handler(req, res) {
     const videoObj = message.video || message.document;
     const photoArr = message.photo; // Array of PhotoSizes
 
-    // If only photo sent, we can auto-upload to drive and reply with the link!
-    if (!videoObj && photoArr && photoArr.length > 0) {
+    // Dump Channel Handler: Photo posted with video link in caption
+    if (photoArr && photoArr.length > 0) {
       const bestPhoto = photoArr[photoArr.length - 1];
+      const caption = message.caption || '';
+      
+      // Auto-upload photo to Google Drive
       const gdriveCdn = await autoUploadPhotoToDrive(bestPhoto.file_id);
+
+      // Check if caption contains a Telegram video/bot link
+      const tgLinkMatch = caption.match(/(https?:\/\/t\.me\/[^\s]+)/i);
+
+      if (tgLinkMatch) {
+        await connectDB();
+        const { title, tags, isPremium } = parseCaption(caption);
+        const targetLink = tgLinkMatch[1];
+
+        // Save post into MongoDB Atlas
+        const video = await Video.findOneAndUpdate(
+          { caption: targetLink },
+          {
+            title: title || `Post_${Date.now()}`,
+            caption,
+            telegramFileId: bestPhoto.file_id,
+            telegramFilePath: targetLink,
+            thumbnailUrl: gdriveCdn,
+            tags,
+            isPremium,
+          },
+          { upsert: true, new: true }
+        );
+
+        await sendTelegramMessage(
+          chatId,
+          `✅ <b>Dump Post Synced to LinkWala App!</b> 🎉\n\n` +
+            `🎬 <b>Title:</b> ${video.title}\n` +
+            `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
+            `🖼️ <b>Google Drive Thumbnail:</b>\n<code>${gdriveCdn}</code>\n\n` +
+            `🔗 <b>Target Link:</b>\n<code>${targetLink}</code>`,
+          { reply_to_message_id: message.message_id }
+        );
+        return res.status(200).json({ status: 'Dump post synced to MongoDB & GDrive', id: video._id });
+      }
+
+      // If only photo without link
       await sendTelegramMessage(
         chatId,
         `🖼️ <b>Photo Auto-Uploaded to Google Drive!</b>\n\n` +
