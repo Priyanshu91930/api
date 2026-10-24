@@ -152,6 +152,9 @@ function parseCaption(caption = '') {
   };
 }
 
+// In-memory set to prevent duplicate execution from Telegram retries and edit updates
+const processedMessages = new Set();
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -159,11 +162,26 @@ export default async function handler(req, res) {
 
   try {
     const update = req.body;
+
+    // Ignore edited posts or duplicate callbacks
+    if (update.edited_message || update.edited_channel_post) {
+      return res.status(200).json({ status: 'Ignored: Edited message' });
+    }
+
     const message = update?.message || update?.channel_post;
 
     if (!message) {
       return res.status(200).json({ status: 'Ignored: No message payload' });
     }
+
+    // Deduplication check: chat_id + message_id
+    const dedupeKey = `${message.chat.id}_${message.message_id}`;
+    if (processedMessages.has(dedupeKey)) {
+      return res.status(200).json({ status: 'Ignored: Already processed message' });
+    }
+    processedMessages.add(dedupeKey);
+    // Auto cleanup memory after 30 seconds
+    setTimeout(() => processedMessages.delete(dedupeKey), 30000);
 
     const chatId = message.chat.id;
     const text = message.text?.trim() || '';
