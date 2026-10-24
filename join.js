@@ -10,7 +10,7 @@ export default function handler(req, res) {
   const normalizedCode = encodeURIComponent(code.trim().toUpperCase());
 
   const appSchemeUrl = `linkwala://join?code=${normalizedCode}`;
-  const playStoreUrl = `https://play.google.com/store/apps/details?id=com.linkwala.app&referrer=code%3D${normalizedCode}`;
+  const playStoreUrl = `https://play.google.com/store/apps/details?id=com.linkwala.official&referrer=code%3D${normalizedCode}`;
 
   const html = `
 <!DOCTYPE html>
