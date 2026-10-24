@@ -74,8 +74,13 @@ export default async function handler(req, res) {
       };
     });
 
+    // Get all unique tags present in database
+    const availableTags = await Video.distinct('tags');
+    const validTags = (availableTags || []).filter(Boolean);
+
     return res.status(200).json({
       success: true,
+      tags: validTags,
       data: formattedVideos,
       pagination: {
         page: pageNum,
