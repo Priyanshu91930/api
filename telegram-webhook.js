@@ -52,6 +52,80 @@ async function getPhotoCdnUrl(photoFileId) {
 }
 
 /**
+ * Parse post link e.g. https://t.me/c/4315694064/3
+ * Returns { chatId: "-1004315694064", messageId: 3 }
+ */
+function parseTelegramPostLink(link) {
+  // Pattern 1: Private channel post link https://t.me/c/4315694064/3
+  const privateMatch = link.match(/t\.me\/c\/(\d+)\/(\d+)/i);
+  if (privateMatch) {
+    return {
+      chatId: `-100${privateMatch[1]}`,
+      messageId: parseInt(privateMatch[2], 10),
+    };
+  }
+
+  // Pattern 2: Public channel post link https://t.me/mychannel/123
+  const publicMatch = link.match(/t\.me\/([a-zA-Z0-9_]+)\/(\d+)/i);
+  if (publicMatch) {
+    return {
+      chatId: `@${publicMatch[1]}`,
+      messageId: parseInt(publicMatch[2], 10),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Fetch video file from dump channel message by forwarding it to bot's chat
+ */
+async function resolveVideoFromPostLink(postLink, botChatId) {
+  const parsed = parseTelegramPostLink(postLink);
+  if (!parsed) return null;
+
+  try {
+    // Copy/Forward the original message from the dump channel to inspect its video file
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/copyMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: botChatId,
+        from_chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.ok || !data.result) {
+      console.warn('copyMessage failed, trying forwardMessage:', data.description);
+      const fwdUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`;
+      const fwdRes = await fetch(fwdUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: botChatId,
+          from_chat_id: parsed.chatId,
+          message_id: parsed.messageId,
+        }),
+      });
+      const fwdData = await fwdRes.json();
+      if (fwdData.ok && fwdData.result) {
+        const msg = fwdData.result;
+        return msg.video || msg.document;
+      }
+      return null;
+    }
+
+    return null;
+  } catch (err) {
+    console.error('Failed to resolve video from post link:', err);
+    return null;
+  }
+}
+
+/**
  * Helper to parse tags and title from message caption
  */
 function parseCaption(caption = '') {
@@ -62,7 +136,6 @@ function parseCaption(caption = '') {
     tags.push(match[1].toLowerCase());
   }
 
-  // Clean title by removing hashtags and telegram links
   let cleanTitle = caption
     .replace(/#\w+/g, '')
     .replace(/https?:\/\/t\.me\/[^\s]+/gi, '')
@@ -102,9 +175,8 @@ export default async function handler(req, res) {
         `👋 <b>Welcome to LinkWala Bot!</b>\n\n` +
           `Main aapki videos aur photos ko Cloudflare Edge CDN se stream aur auto-index karta hoon!\n\n` +
           `<b>Kaise use karein:</b>\n` +
-          `• Dump Channel me photo + caption me telegram video link post karein\n` +
-          `• Photo Cloudflare Edge CDN par instant live ho jayegi\n` +
-          `• Post seedha LinkWala App me render hone lagega!\n\n` +
+          `• Dump Channel me photo + caption me dump video link post karein\n` +
+          `• Main dump post se direct video uthakar Cloudflare streaming link bana dunga!\n\n` +
           `🌐 <b>Official Website:</b> <a href="https://www.tg.linkwala.com">www.tg.linkwala.com</a>`,
         {
           reply_markup: {
@@ -134,7 +206,7 @@ export default async function handler(req, res) {
     const videoObj = message.video || message.document;
     const photoArr = message.photo;
 
-    // 1. DUMP CHANNEL POST HANDLER: Photo posted with Telegram link in caption
+    // 1. DUMP CHANNEL POST HANDLER: Photo posted with Telegram Post Link in caption
     if (photoArr && photoArr.length > 0) {
       const bestPhoto = photoArr[photoArr.length - 1];
       const caption = message.caption || '';
@@ -142,7 +214,7 @@ export default async function handler(req, res) {
       // Instant Cloudflare CDN Image URL
       const imageCdnUrl = await getPhotoCdnUrl(bestPhoto.file_id);
 
-      // Check if caption contains a Telegram video or bot link
+      // Extract Telegram Post Link from caption
       const tgLinkMatch = caption.match(/(https?:\/\/t\.me\/[^\s]+)/i);
 
       if (tgLinkMatch) {
@@ -150,16 +222,67 @@ export default async function handler(req, res) {
         const { title, tags, isPremium } = parseCaption(caption);
         const targetLink = tgLinkMatch[1];
 
+        let videoFilePath = '';
+        let videoFileId = bestPhoto.file_id;
+        let duration = 0;
+        let fileSize = 0;
+
+        // Try to fetch original video file from the dump channel post
+        const parsedLink = parseTelegramPostLink(targetLink);
+        if (parsedLink) {
+          try {
+            // Forward message to inspect original video
+            const fwdRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: chatId,
+                from_chat_id: parsedLink.chatId,
+                message_id: parsedLink.messageId,
+              }),
+            });
+            const fwdData = await fwdRes.json();
+            if (fwdData.ok && fwdData.result) {
+              const fwdVideo = fwdData.result.video || fwdData.result.document;
+              if (fwdVideo) {
+                videoFileId = fwdVideo.file_id;
+                fileSize = fwdVideo.file_size || 0;
+                duration = fwdVideo.duration || 0;
+                videoFilePath = await getTelegramFilePath(fwdVideo.file_id);
+
+                // Delete the temporary forwarded message to keep channel clean
+                await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: chatId,
+                    message_id: fwdData.result.message_id,
+                  }),
+                }).catch(() => {});
+              }
+            }
+          } catch (e) {
+            console.error('Error fetching video from dump post link:', e.message);
+          }
+        }
+
+        // Cloudflare stream link
+        const streamUrl = videoFilePath
+          ? `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(videoFilePath)}`
+          : targetLink;
+
         // Save into MongoDB Atlas
         const video = await Video.findOneAndUpdate(
           { caption: targetLink },
           {
-            title: title || `Post_${Date.now()}`,
+            title: title || `Video_${Date.now()}`,
             caption,
-            telegramFileId: bestPhoto.file_id,
-            telegramFilePath: targetLink,
+            telegramFileId: videoFileId,
+            telegramFilePath: videoFilePath || targetLink,
             thumbnailUrl: imageCdnUrl,
             tags,
+            duration,
+            fileSize,
             isPremium,
           },
           { upsert: true, new: true }
@@ -167,17 +290,19 @@ export default async function handler(req, res) {
 
         await sendTelegramMessage(
           chatId,
-          `✅ <b>Post Synced to LinkWala App!</b> 🎉\n\n` +
+          `✅ <b>Video Post Synced to LinkWala App!</b> 🎉\n\n` +
             `🎬 <b>Title:</b> ${video.title}\n` +
             `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
-            `🖼️ <b>Cloudflare Image CDN:</b>\n<code>${imageCdnUrl}</code>\n\n` +
-            `🔗 <b>Video Link:</b>\n<code>${targetLink}</code>`,
+            `🖼️ <b>Thumbnail CDN:</b>\n<code>${imageCdnUrl}</code>\n\n` +
+            (videoFilePath
+              ? `⚡ <b>Cloudflare Stream Link:</b>\n<code>${streamUrl}</code>`
+              : `🔗 <b>Dump Post Link:</b>\n<code>${targetLink}</code>`),
           { reply_to_message_id: message.message_id }
         );
-        return res.status(200).json({ success: true, message: 'Dump post indexed', id: video._id });
+        return res.status(200).json({ success: true, message: 'Dump post indexed with video', id: video._id });
       }
 
-      // If only photo sent without caption link
+      // If only photo sent
       await sendTelegramMessage(
         chatId,
         `🖼️ <b>Cloudflare Image CDN Link:</b>\n\n<code>${imageCdnUrl}</code>`,
@@ -198,10 +323,8 @@ export default async function handler(req, res) {
       const { title, tags, isPremium } = parseCaption(caption);
       const filePath = await getTelegramFilePath(fileId);
 
-      // Instant Cloudflare Video Streaming Link
       const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
 
-      // Thumbnail from video if available
       let thumbCdn = '';
       if (videoObj.thumbnail?.file_id) {
         thumbCdn = await getPhotoCdnUrl(videoObj.thumbnail.file_id);
@@ -235,14 +358,6 @@ export default async function handler(req, res) {
       );
 
       return res.status(200).json({ success: true, id: video._id });
-    }
-
-    if (text) {
-      await sendTelegramMessage(
-        chatId,
-        `📹 Mujhe photo + video link caption me bhejein ya direct video forward karein!\n\nHelp ke liye <code>/help</code> bhejein.`
-      );
-      return res.status(200).json({ status: 'Handled text' });
     }
 
     return res.status(200).json({ status: 'No action' });
