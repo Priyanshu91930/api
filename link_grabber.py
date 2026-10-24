@@ -16,7 +16,7 @@ TARGET_CHANNEL = os.getenv("TELEGRAM_CHANNEL_ID", "https://t.me/+PuWfxzC2QEVkNzA
 
 # Connect to MongoDB
 mongo = MongoClient(MONGODB_URI)
-db = mongo.get_default_database()
+db = mongo["linkwala"]
 videos_col = db["videos"]
 
 # Client session
