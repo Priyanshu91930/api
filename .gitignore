@@ -1,3 +1,5 @@
 node_modules
 .env
 .DS_Store
+*gdrive_credentials.json
+config/gdrive_credentials.json

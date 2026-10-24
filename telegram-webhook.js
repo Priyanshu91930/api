@@ -1,5 +1,6 @@
 import { connectDB } from './config/db.js';
 import Video from './models/Video.js';
+import { uploadImageToDrive } from './config/gdrive.js';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CLOUDFLARE_STREAM_URL = process.env.CLOUDFLARE_STREAM_URL || 'https://linkwala.priyanshusolanki62.workers.dev';
@@ -36,6 +37,27 @@ async function getTelegramFilePath(fileId) {
     return data.result.file_path;
   }
   throw new Error(data.description || 'Failed to get file path from Telegram');
+}
+
+/**
+ * Download Telegram photo buffer and upload to Google Drive automatically
+ */
+async function autoUploadPhotoToDrive(photoFileId) {
+  try {
+    const filePath = await getTelegramFilePath(photoFileId);
+    const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
+    const res = await fetch(downloadUrl);
+    if (!res.ok) throw new Error('Failed to download photo from Telegram');
+
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const uploadRes = await uploadImageToDrive(buffer, `photo_${Date.now()}.jpg`, 'image/jpeg');
+    return uploadRes.directCdnUrl;
+  } catch (err) {
+    console.error('❌ Auto-upload photo to Google Drive failed:', err.message);
+    return '';
+  }
 }
 
 /**
@@ -98,11 +120,11 @@ export default async function handler(req, res) {
       await sendTelegramMessage(
         chatId,
         `👋 <b>Welcome to LinkWala Bot!</b>\n\n` +
-          `Main aapki videos ko app me high-speed stream aur auto-index karta hoon.\n\n` +
-          `<b>Commands:</b>\n` +
-          `• Send/Forward any Video or File\n` +
-          `• <code>/stats</code> - Check total database videos\n` +
-          `• <code>/help</code> - How to use\n\n` +
+          `Main aapki videos aur photos ko Google Drive aur Cloudflare me auto-stream karta hoon!\n\n` +
+          `<b>Kaise use karein:</b>\n` +
+          `• Koi bhi video post/forward karein (with photo/thumbnail)\n` +
+          `• Image automatically Google Drive me upload hogi\n` +
+          `• Video ka Cloudflare Stream Link instant banega\n\n` +
           `🌐 <b>Official Website:</b> <a href="https://www.tg.linkwala.com">www.tg.linkwala.com</a>`,
         {
           reply_markup: {
@@ -116,18 +138,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'Handled /start' });
     }
 
-    if (text.startsWith('/help')) {
-      await sendTelegramMessage(
-        chatId,
-        `ℹ️ <b>How to Index Videos in LinkWala App:</b>\n\n` +
-          `1. Mujhe ya aapke connected channel me koi bhi <b>Video</b> send/forward karein.\n` +
-          `2. Caption me Title aur Tags likhein:\n` +
-          `   <i>My Viral Video #viral #premium [gdrive:YOUR_IMAGE_ID]</i>\n` +
-          `3. Video turant MongoDB me index ho jayegi aur app me live ho jayegi!`
-      );
-      return res.status(200).json({ status: 'Handled /help' });
-    }
-
     if (text.startsWith('/stats')) {
       await connectDB();
       const count = await Video.countDocuments();
@@ -135,20 +145,35 @@ export default async function handler(req, res) {
         chatId,
         `📊 <b>LinkWala Database Stats:</b>\n\n` +
           `• Total Indexed Videos: <b>${count}</b>\n` +
+          `• Google Drive Auto-Sync: <b>Connected</b>\n` +
           `• Cloudflare Edge Cache: <b>Active</b>\n` +
           `• Serverless Status: <b>Online</b>`
       );
       return res.status(200).json({ status: 'Handled /stats' });
     }
 
-    // Video / Document processing
+    // Video / Document / Photo processing
     const videoObj = message.video || message.document;
+    const photoArr = message.photo; // Array of PhotoSizes
+
+    // If only photo sent, we can auto-upload to drive and reply with the link!
+    if (!videoObj && photoArr && photoArr.length > 0) {
+      const bestPhoto = photoArr[photoArr.length - 1];
+      const gdriveCdn = await autoUploadPhotoToDrive(bestPhoto.file_id);
+      await sendTelegramMessage(
+        chatId,
+        `🖼️ <b>Photo Auto-Uploaded to Google Drive!</b>\n\n` +
+          `⚡ <b>High-Speed CDN Link:</b>\n<code>${gdriveCdn}</code>`,
+        { reply_to_message_id: message.message_id }
+      );
+      return res.status(200).json({ status: 'Photo uploaded to GDrive' });
+    }
+
     if (!videoObj) {
-      // Normal text received but not a command
       if (text) {
         await sendTelegramMessage(
           chatId,
-          `📹 Mujhe video forward karein ya send karein taaki wo LinkWala app me automatically add ho sake!\n\nHelp ke liye <code>/help</code> bhejein.`
+          `📹 Mujhe video (with optional photo/thumbnail) forward karein taaki wo Google Drive + Cloudflare par auto-stream ho sake!`
         );
       }
       return res.status(200).json({ status: 'Handled text' });
@@ -161,12 +186,24 @@ export default async function handler(req, res) {
     const duration = videoObj.duration || 0;
     const caption = message.caption || '';
 
-    const { title, tags, thumbnailUrl, isPremium } = parseCaption(caption);
+    let { title, tags, thumbnailUrl, isPremium } = parseCaption(caption);
 
-    // Fetch official file_path from Telegram Bot API
+    // 1. Auto-upload thumbnail if video has an embedded thumbnail or message has photo
+    if (!thumbnailUrl) {
+      const thumbFileId = videoObj.thumbnail?.file_id || (photoArr && photoArr[photoArr.length - 1]?.file_id);
+      if (thumbFileId) {
+        console.log('🔄 Auto-uploading thumbnail to Google Drive...');
+        thumbnailUrl = await autoUploadPhotoToDrive(thumbFileId);
+      }
+    }
+
+    // 2. Fetch official file_path from Telegram Bot API
     const filePath = await getTelegramFilePath(fileId);
 
-    // Save or update in MongoDB
+    // 3. Instant Cloudflare Stream URL
+    const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
+
+    // 4. Save directly into MongoDB Atlas
     const video = await Video.findOneAndUpdate(
       { telegramFileId: fileId },
       {
@@ -176,24 +213,21 @@ export default async function handler(req, res) {
         telegramFilePath: filePath,
         fileSize,
         duration,
-        thumbnailUrl,
+        thumbnailUrl: thumbnailUrl || '',
         tags,
         isPremium,
       },
       { upsert: true, new: true }
     );
 
-    // Stream URL via Cloudflare Worker
-    const streamUrl = `${CLOUDFLARE_STREAM_URL}/stream?path=${encodeURIComponent(filePath)}`;
-
-    // Send instant confirmation reply to Telegram
+    // 5. Send confirmation reply
     await sendTelegramMessage(
       chatId,
-      `✅ <b>Video Saved Successfully to LinkWala!</b> 🎉\n\n` +
+      `✅ <b>Video & Thumbnail Auto-Processed!</b> 🎉\n\n` +
         `🎬 <b>Title:</b> ${video.title}\n` +
         `🏷️ <b>Tags:</b> ${tags.map((t) => '#' + t).join(' ')}\n` +
-        `💎 <b>Type:</b> ${isPremium ? 'Premium (Locked)' : 'Public'}\n` +
-        `📦 <b>Size:</b> ${(fileSize / (1024 * 1024)).toFixed(1)} MB\n\n` +
+        `📦 <b>Size:</b> ${(fileSize / (1024 * 1024)).toFixed(1)} MB\n` +
+        (thumbnailUrl ? `🖼️ <b>GDrive Thumbnail:</b>\n<code>${thumbnailUrl}</code>\n\n` : '\n') +
         `⚡ <b>Cloudflare Stream Link:</b>\n<code>${streamUrl}</code>`,
       {
         reply_to_message_id: message.message_id,
@@ -202,10 +236,12 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: 'Video indexed and replied successfully',
+      message: 'Video and thumbnail processed successfully',
       video: {
         id: video._id,
         title: video.title,
+        thumbnailUrl,
+        streamUrl,
       },
     });
   } catch (error) {
