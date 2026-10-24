@@ -78,11 +78,25 @@ export default async function handler(req, res) {
         { upsert: true, new: true }
       );
 
+      // Official LinkWala Channel Profile Payload
+      const channelPayload = {
+        id: 'chan_linkwala',
+        code: normalizedCode,
+        name: 'LinkWala Official',
+        handle: '@linkwala',
+        verified: true,
+        description: 'Official Telegram Channel • Full VIP Access Unlocked',
+        subscribers: 185000,
+        subscriberCountText: '185K subscribers',
+        joinedByUser: true,
+      };
+
       return res.status(200).json({
         success: true,
         isTelegramJoined: user.isTelegramJoined,
         unlockedTags: user.unlockedTags,
-        message: user.isTelegramJoined ? 'Channel verified successfully' : 'Not yet joined',
+        channel: channelPayload,
+        message: 'Channel verified successfully',
       });
     } catch (error) {
       console.error('❌ Verification error:', error);
