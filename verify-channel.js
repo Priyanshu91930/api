@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    const { deviceId, telegramUserId } = req.body;
+    const { deviceId, telegramUserId, code } = req.body;
 
     if (!deviceId) {
       return res.status(400).json({ success: false, error: 'deviceId is required' });
@@ -32,6 +32,12 @@ export default async function handler(req, res) {
 
     try {
       await connectDB();
+
+      const normalizedCode = (code || '').trim().toUpperCase();
+      const VALID_CODES = ['LINKWALA', 'VIRAL', 'PREMIUM', 'TG2026'];
+
+      // Check if submitted code is valid
+      const isCodeValid = VALID_CODES.includes(normalizedCode);
 
       let isJoined = false;
 
@@ -46,12 +52,17 @@ export default async function handler(req, res) {
 
         if (tgData.ok && tgData.result) {
           const status = tgData.result.status;
-          // Valid membership statuses
           isJoined = ['member', 'administrator', 'creator'].includes(status);
         }
       } else {
-        // Fallback or optimistic verification if user verified via deep link
-        isJoined = true;
+        isJoined = isCodeValid;
+      }
+
+      if (!isJoined && !isCodeValid) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid Code! Please join our Telegram channel to receive the code.',
+        });
       }
 
       // Update user record in MongoDB
