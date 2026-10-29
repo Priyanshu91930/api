@@ -97,12 +97,31 @@ export default function handler(req, res) {
       font-size: 14px;
       border: 1px solid rgba(255, 255, 255, 0.12);
     }
-    .video-preview {
+    .app-lock-box {
       width: 100%;
-      border-radius: 12px;
-      background: #000;
-      margin-bottom: 16px;
-      max-height: 220px;
+      border-radius: 14px;
+      background: #0f172a;
+      border: 1px dashed #475569;
+      padding: 28px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .lock-icon {
+      font-size: 38px;
+      margin-bottom: 8px;
+    }
+    .lock-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 4px;
+    }
+    .lock-subtitle {
+      font-size: 13px;
+      color: #94a3b8;
     }
   </style>
   <script>
@@ -116,7 +135,7 @@ export default function handler(req, res) {
       }, 500);
     }
 
-    // Auto-launch on page load
+    // Auto-launch app on page load
     window.onload = function() {
       setTimeout(triggerApp, 300);
     };
@@ -124,20 +143,22 @@ export default function handler(req, res) {
 </head>
 <body>
   <div class="card">
-    <div class="badge">🎬 LinkWala Stream</div>
+    <div class="badge">🎬 LinkWala App Exclusive</div>
     <h1>${title}</h1>
-    <p>Opening LinkWala App to stream video in HD with high-speed playback...</p>
+    <p>This content is streamable exclusively inside the LinkWala App.</p>
 
-    <video class="video-preview" controls playsinline src="${url}" preload="metadata">
-      Your browser does not support HTML5 video.
-    </video>
+    <div class="app-lock-box">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-title">Stream Locked in Browser</div>
+      <div class="lock-subtitle">Open in LinkWala App to watch in HD</div>
+    </div>
 
     <a href="${intentUrl}" onclick="triggerApp(); return false;" class="btn">
       ▶ Open in LinkWala App
     </a>
 
     <a href="https://play.google.com/store/apps/details?id=com.linkwala.official" class="sub-btn">
-      Get LinkWala on Play Store
+      📥 Get LinkWala on Play Store
     </a>
   </div>
 </body>
